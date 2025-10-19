@@ -26,17 +26,20 @@ dataframes = []
 for file in parquet_files:
     print(f"🔹 Leyendo archivo: {file}")
     obj = s3.get_object(Bucket=s3_input_bucket, Key=file)
-    df = pd.read_parquet(BytesIO(obj["Body"].read()), engine="fastparquet")
+
+    # Leer con pyarrow (mejor manejo de tipos)
+    df = pd.read_parquet(BytesIO(obj["Body"].read()), engine="pyarrow")
 
     if "rental_date" not in df.columns:
         raise Exception(f"❌ El archivo {file} no contiene la columna 'rental_date'")
 
-    # --- 🔧 Forzar conversión segura a datetime ---
-    df["rental_date"] = pd.to_datetime(df["rental_date"], errors="coerce")
+    # 🔧 Convertir a datetime de forma segura
+    if not pd.api.types.is_datetime64_any_dtype(df["rental_date"]):
+        df["rental_date"] = pd.to_datetime(df["rental_date"], errors="coerce")
 
-    # Eliminar filas con fechas inválidas
+    # Eliminar valores nulos o inválidos
     df = df.dropna(subset=["rental_date"])
-    
+
     dataframes.append(df)
 
 # --- 3. Combinar todo ---
@@ -49,19 +52,13 @@ df_dim = df_all[["rental_date"]].drop_duplicates().copy()
 # Convertir a tipo date puro
 df_dim["rental_date"] = df_dim["rental_date"].dt.date
 
-# date_id (YYYYMMDD como entero)
+# Crear columnas derivadas
 df_dim["date_id"] = df_dim["rental_date"].apply(lambda x: int(x.strftime("%Y%m%d")))
-
-# Día de la semana (Monday, Tuesday, etc.)
 df_dim["day_of_week"] = pd.to_datetime(df_dim["rental_date"]).dt.day_name()
-
-# Es fin de semana
 df_dim["is_weekend"] = df_dim["day_of_week"].isin(["Saturday", "Sunday"])
-
-# Trimestre del año (1–4)
 df_dim["quarter"] = pd.to_datetime(df_dim["rental_date"]).dt.quarter
 
-# Festivos en EE. UU.
+# Festivos (EE.UU.)
 us_holidays = holidays.US()
 df_dim["is_holiday"] = df_dim["rental_date"].apply(lambda x: x in us_holidays)
 
@@ -70,7 +67,7 @@ df_dim = df_dim[["date_id", "rental_date", "is_weekend", "is_holiday", "day_of_w
 
 # --- 6. Guardar resultado en S3 en formato Parquet (Snappy) ---
 output_buffer = BytesIO()
-df_dim.to_parquet(output_buffer, index=False, compression="snappy", engine="fastparquet")
+df_dim.to_parquet(output_buffer, index=False, compression="snappy", engine="pyarrow")
 
 s3.put_object(
     Bucket=s3_input_bucket,
