@@ -27,13 +27,21 @@ for file in parquet_files:
     print(f"🔹 Leyendo archivo: {file}")
     obj = s3.get_object(Bucket=s3_input_bucket, Key=file)
     df = pd.read_parquet(BytesIO(obj["Body"].read()), engine="fastparquet")
+
+    # 🔧 Asegurar que rental_date sea tipo string
+    if "rental_date" not in df.columns:
+        raise Exception(f"❌ El archivo {file} no contiene la columna 'rental_date'")
+
+    df["rental_date"] = df["rental_date"].astype(str).str.strip()  # limpiar espacios
     dataframes.append(df)
 
 df_all = pd.concat(dataframes, ignore_index=True)
 print(f"✅ Total de registros cargados: {len(df_all)}")
 
 # --- 3. Asegurar que rental_date sea solo fecha ---
-df_all["rental_date"] = pd.to_datetime(df_all["rental_date"]).dt.date
+# Se convierte de forma segura ignorando errores y eliminando nulos
+df_all["rental_date"] = pd.to_datetime(df_all["rental_date"], errors="coerce").dt.date
+df_all = df_all.dropna(subset=["rental_date"])
 
 # --- 4. Crear tabla de dimensión de fechas ---
 df_dim = df_all[["rental_date"]].drop_duplicates().copy()
